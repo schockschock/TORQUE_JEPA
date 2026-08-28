@@ -1,0 +1,211 @@
+\documentclass{article}
+\usepackage{iclr2027_conference,times}
+
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{color}
+\usepackage{xcolor}
+
+\title{TORQUE: State-Grounded Predictive Representations for Irregular Rigid-Body Motion Forecasting}
+
+% Authors must remain hidden while \iclrfinalcopy is commented out.
+\author{Adrien Schockaert, Hazem Wannous \\
+CERI SN \\
+IMT Nord Europe \\
+Villeneuve-D'Ascq, 59650 (France) \\
+\And Vincent Magnier, Jean-françois Witz \\
+Univ. Lille, CNRS, Centrale Lille, UMR 9013 \\
+LaMcube Laboratoire de Mécanique, Multiphysique, Multiéchelle \\
+Lille, France \\
+\And Guillaume Dufaye \\
+Downs, \\
+59670 Sainte-Marie-Cappel (France)
+}
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+
+% \iclrfinalcopy
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This paper defines TORQUE, a controlled multimodal benchmark for forecasting future rigid-body kinematic states from causal observations of irregular objects. TORQUE is designed to provide synchronized simulator states, single-view RGB-D observations, object geometry, and exact future targets across free-fall-and-rebound, object-throw, ramp, and conveyor scenarios. We also propose TORQUE-JEPA, a state-grounded representation-learning method that predicts future latents autoregressively and is evaluated through Forecast Probes trained on frozen representations. The protocol separates observable context from privileged physical parameters, uses object-disjoint and condition-disjoint evaluation, and tests object-disjoint accessibility of intrinsic mechanical labels. Because physical parameters and explicit environment geometry are withheld from primary methods, exact simulator rollouts are deterministic while observable-context forecasting remains partially observed.
+\end{abstract}
+
+\section{Introduction}
+
+Predicting the future motion of an irregular rigid body requires more than recognizing its appearance or detecting a physical event. A model must transform temporal observations into forecasts of centre-of-mass (COM) position, orientation, COM linear velocity, and angular velocity while generalizing across object identities, initial conditions, and interaction regimes. Existing physical-reasoning benchmarks~\cite{riochet_intphys_2020,bordes_intphys_2025,bear_physion_2022,tung_physion_2023,yi_clevrer_2020} primarily evaluate event prediction, possible futures, or discrimination between physically possible and impossible videos. TORQUE instead evaluates dense future kinematic-state forecasting.
+
+The controlled object family comprises irregular potato-shaped rigid bodies derived from 3dPotatoTwin~\cite{blok_high-throughput_2025}. Their asymmetry and within-family geometric variation support a focused study of irregular rigid-body dynamics; we do not claim universal object understanding.
+
+We propose TORQUE-JEPA, a state-grounded representation-learning method. It encodes observable kinematic, visual, and geometric context, predicts future latent states autoregressively, and is evaluated using shallow Forecast Probes trained on frozen predicted representations.
+
+\textbf{Our contributions are:}
+\begin{enumerate}
+    \item We define a controlled multimodal kinematic-state forecasting task with exact simulator targets across free-flight and contact-rich rigid-body interaction regimes.
+    \item We specify TORQUE Dataset, which contains synchronized visual observations, object geometry, kinematic states, privileged physical metadata, and controlled scenarios.
+    \item We propose TORQUE-JEPA, a multimodal state-grounded joint-embedding method that predicts future object latents autoregressively and is evaluated through Forecast Probes trained on frozen representations.
+    \item We specify an evaluation protocol covering physical controls, supervised models, geometry-aware methods, pretrained representations, and object-disjoint generalization.
+\end{enumerate}
+
+\section{Related Work}
+
+\subsection{Future 3D Object Motion Prediction}
+
+SlotFormer~\cite{wu_slotformer_2023} predicts object-centric visual dynamics, while ObjectForesight~\cite{soraki_objectforesight_2026} predicts future 6-DoF trajectories under human interaction, where unknown future actions make forecasting one-to-many. ObjectForesight is especially relevant because it uses visual observations and object-centric 3D information, and we include an adaptation as a baseline. TORQUE differs in experimental control, target definition, interaction regimes, and representation-learning objective: its simulator provides one exact realized trajectory for each complete simulator configuration. This does not make primary forecasting fully observed, because physical parameters and explicit environment geometry are withheld from primary methods. We therefore distinguish deterministic data generation from partially observed point forecasting.
+
+\subsection{Physical Scene Understanding}
+
+Physical possibility assessment~\cite{riochet_intphys_2020,bordes_intphys_2025} and contact prediction~\cite{bear_physion_2022,tung_physion_2023} test complementary aspects of physical scene understanding. World-model work~\cite{chen_vl-jepa_2025,assran_v-jepa_2025,maes_leworldmodel_2026} additionally studies physical information in predictive latent spaces. TORQUE asks whether kinematic-state forecasting can produce representations useful for rigid-body mechanics, including impacts, friction, and sustained contact.
+
+\subsection{Predictive Representations and World Models}
+
+Generative world models~\cite{nvidia_cosmos_2025,nvidia_cosmos_2026} and JEPA-based predictive models~\cite{chen_vl-jepa_2025,maes_leworldmodel_2026} pursue complementary approaches to future prediction and representation learning. TORQUE-JEPA uses training-only future kinematic states as targets and therefore is state-grounded representation learning rather than purely self-supervised visual JEPA.
+
+\subsection{Rigid-Body Dynamics and Geometry-Aware Prediction}
+
+Geometry-aware methods use explicit shape, interaction graphs, or structured rigid-body state. We compare against geometry-conditioned Transformers, FIGNet~\cite{allen_fignet_2022}, and an ObjectForesight adaptation under declared information contracts.
+
+\section{Rigid-Body Kinematic-State Forecasting}
+
+\subsection{Problem Definition}
+
+Given a causal observation window ending at index $e$, a model forecasts $H=30$ future kinematic states at 60~Hz. The observation contains 16 samples spanning 0.25~s, and the target spans the following 0.50~s. Let $p_e^W$ and $R_e^W$ denote observation-end COM world position and active actor-to-world rotation. The physical future state is $S_t=[r_t^A,Q_t^A,v_t^W,\omega_t^B]$, where:
+\begin{itemize}
+    \item $r_t^A=p_t^W-p_e^W$ is COM displacement in a translated world-aligned Observation-End Frame;
+    \item $Q_t^A=(R_e^W)^\top R_t^W$ is orientation relative to observation-end actor orientation;
+    \item $v_t^W$ is world-frame COM velocity;
+    \item $\omega_t^B$ is angular velocity in the authored actor frame.
+\end{itemize}
+The network tensor is $\widetilde S_t=[r_t^A,\operatorname{rot6d}(Q_t^A),v_t^W,\omega_t^B]\in\mathbb{R}^{15}$. The model receives $p_e^W$ but predicts relative position and orientation. Evaluation reconstructs world motion using $p_e^W$ and $R_e^W$.
+
+\subsection{Observable And Privileged Context}
+
+Primary methods receive past kinematic state, Camera A RGB-D observations, object geometry, sampled timestamps, and observation-end world location. They do not receive scenario labels, camera calibration, simulator segmentation, contact state, physical parameters, gravity, or an explicit support/environment representation. RGB-D may depict visible surfaces. Physical parameters and simulator-only quantities define privileged references and representation analyses.
+
+\subsection{Generalization Settings}
+
+We evaluate four separate axes: object-disjoint forecasting, held-out joint initial-condition combinations, held-out scenario-condition interpolation and extrapolation, and leave-one-scenario-out transfer with the same object population. Each primary protocol changes one axis at a time; combined-axis tests are secondary. TORQUE has no separate shape identity and therefore no shape-disjoint split. Camera pose differs by scenario and calibration is withheld, so multimodal cross-scenario transfer jointly tests interaction-regime and viewpoint shift.
+
+\subsection{Information Tracks}
+
+We train separate main models for state, state+RGB, state+RGB-D, state+geometry, and state+RGB-D+geometry. Privileged tracks add declared physical or simulator parameters and are reported separately.
+
+\section{TORQUE Dataset}
+
+TORQUE Dataset contains rigid-body simulations generated with NVIDIA Isaac Sim and PhysX under four controlled scenarios.
+
+\subsection{Object Population and Geometry}
+
+Objects are potato-shaped rigid-body assets derived from 3dPotatoTwin~\cite{blok_high-throughput_2025}. Each \texttt{object\_id} has fixed geometry and intrinsic physical properties; shapes have no separate identity. Original and watertight meshes are distributed with precomputed Utonia point-cloud features. Existing Utonia artifacts use 32,768 area-weighted samples from original meshes, sampled-mean unit-sphere normalization, 0.01 grid spacing in normalized coordinates, four upcast hierarchy levels, and global mean/max pooling of 1,386-dimensional features. Geometry is object-normalized rather than simulator-COM-centred.
+
+\subsection{Scenario Families}
+
+\textbf{Free fall and rebound} tests gravity-driven motion, impacts, restitution, and rotational response. \textbf{Object throw} tests nonzero initial velocity, wall impact, and rotational response. \textbf{Ramp} tests sustained contact, friction, sliding, and rolling. \textbf{Conveyor} tests relative motion, frictional entrainment, slip, and rolling on moving support.
+
+\subsection{Modalities}
+
+Each trajectory stores:
+\begin{itemize}
+    \item \textbf{Kinematic state}: COM position, active actor-to-world orientation, COM linear velocity, actor- and world-frame angular velocity, and timestamps.
+    \item \textbf{Visual observations}: synchronized Camera A RGB and metric depth captured at 120~Hz and sampled at 60~Hz for model windows.
+    \item \textbf{Object geometry}: original and watertight meshes plus precomputed Utonia features.
+    \item \textbf{Privileged metadata}: mass, volume, density, inertia, COM offset, friction, restitution, scenario parameters, contacts, and simulator metadata.
+\end{itemize}
+
+\subsection{Dataset Splits And Manifests}
+
+The fixed object-disjoint partition contains 236 training, 51 validation, and 50 test objects using seed 1729. All trajectories from one object remain in one partition. Immutable trajectory and window manifests record schedule, split, content, and policy hashes. Windows require complete synchronized files, successful validation, sufficient duration, and Camera A frustum visibility throughout the 16 sampled observation frames.
+
+\section{TORQUE-JEPA}
+
+TORQUE-JEPA is a multimodal, state-grounded representation-learning method. It encodes a causal observation window with separate kinematic, visual, and geometry encoders, then predicts future latent representations autoregressively. After pretraining, shallow Forecast Probes are trained on frozen predicted representations.
+
+\subsection{Multimodal Encoding}
+
+The first core has hidden dimension 256, four causal context blocks, six autoregressive predictor blocks, eight attention heads, and FFN dimension 1024. Each state token queries pooled Camera A RGB and depth tokens from the same timestep. Dynamic tokens query a persistent geometry token formed from global Utonia summaries, then pass through causal temporal fusion. Observation-end COM world location is concatenated into each state token. The model uses sinusoidal encoding over fixed 60~Hz sample indices.
+
+RGB tracks compare scratch ResNet-50, frozen ImageNet ResNet-50, and frozen DINOv2 ViT-S/14. Depth uses a separate scratch ResNet-18. Hierarchical causal fusion is the first architecture; patch-level tokens, local Utonia tokens, Perceiver fusion, and explicit static/dynamic latent factorization are ablations.
+
+\subsection{Autoregressive Latent Dynamics}
+
+Every future query cross-attends the full observed context. At future index $k\in\{1,\ldots,H\}$, the predictor emits a 256-dimensional hidden state $u_{e+k}$ and projects it into a 32-dimensional objective latent $\hat z_{e+k}$. Horizon one uses a learned beginning-of-sequence token. Teacher forcing feeds the previous target latent, whereas free-running rollout feeds the previous prediction. Training allocates 40\% of backbone updates to teacher forcing and 20\% each to maximum free-running prefix lengths 2, 4, and 8. Within each free-running stage, prefix length is sampled uniformly from one through the stage maximum; teacher forcing resumes after the prefix and losses remain defined at all horizons. Evaluation is open-loop for all 30 steps.
+
+\subsection{State-Grounded Objective}
+
+One shared trainable MLP with BatchNorm encodes every future kinematic state into $z_{e+k}\in\mathbb{R}^{32}$. It receives no horizon input and uses neither stop-gradient nor EMA. The predictor uses a separate MLP with BatchNorm. We optimize
+\begin{equation}
+\mathcal{L}_{\mathrm{TORQUE\text{-}JEPA}}=
+\frac{1}{BH}\sum_{b,k}\lVert\hat z_{b,e+k}-z_{b,e+k}\rVert_2^2
++\frac{\lambda_{\mathrm{sigreg}}}{H}\sum_k
+\mathrm{SIGReg}(\{z_{b,e+k}\}_{b=1}^B).
+\end{equation}
+SIGReg is sketched isotropic Gaussian regularization~\cite{maes_leworldmodel_2026}: random one-dimensional projections of target latents are matched to a standard Gaussian using the Epps--Pulley characteristic-function statistic. It is computed independently per horizon over an effective global batch of 128 target latents and does not regularize predicted latents. The initial method includes no decoded-state, contact, future-visual, consistency, or latent-mechanics loss.
+
+\subsection{Frozen Forecast Probes}
+
+After representation training, we freeze the context encoder and latent predictor and remove the target branch. A shared-horizon linear probe and a two-layer MLP Forecast Probe map $u_{e+k}\in\mathbb{R}^{256}$ to future COM displacement, observation-end-relative orientation, world COM velocity, and actor-frame angular velocity. Probe training never updates the backbone. TORQUE-Sup instead trains the matched backbone end-to-end using direct component-aware forecast losses.
+
+\section{Experimental Setup}
+
+\subsection{Training Protocol}
+
+State, RGB, and depth are captured synchronously at 120~Hz and sampled at 60~Hz. Each sample contains 16 observations and 30 future targets. Training indexes every eligible endpoint, allows at most one window per trajectory per global batch, and balances contact phases using simulator labels that are never passed to primary methods. Evaluation uses deterministic endpoints at 30-sample stride. We use one seed for engineering pilots and three locked seeds for final results.
+
+TORQUE-Sup and TORQUE-JEPA match backbone token count, hidden widths, optimizer updates, rollout protocol, and validation search budget. Forecast Probe cost is reported separately.
+
+\subsection{Forecasting Metrics}
+
+We reconstruct world trajectories before evaluation. Position uses ADE and FDE in metres. Orientation uses mean and final SO(3) geodesic error in degrees. Linear and angular velocity use vector L2 errors in m/s and rad/s. We report dense horizon curves without combining state families into one scalar. Windows are averaged within trajectory, trajectories within scenario/object, scenarios equally within object, then objects equally; confidence intervals bootstrap objects.
+
+\subsection{Baselines}
+
+\begin{itemize}
+    \item \textbf{Physical controls}: persistence and constant world linear/angular velocity, followed by ballistic free-flight extrapolation.
+    \item \textbf{Supervised learning}: MLP, recurrent and Transformer baselines, plus TORQUE-Sup as matched end-to-end supervised method.
+    \item \textbf{Visual and geometry tracks}: scratch and frozen visual encoders, separate metric-depth encoder, and Utonia geometry features.
+    \item \textbf{Related methods}: adaptations of LeWorldModel~\cite{maes_leworldmodel_2026}, DINO-WM~\cite{zhou_dinowm_2025}, ObjectForesight~\cite{soraki_objectforesight_2026}, and FIGNet~\cite{allen_fignet_2022}.
+    \item \textbf{Privileged references}: parameter-conditioned models and simulator references reported separately.
+\end{itemize}
+
+\section{Planned Experiments}
+
+\subsection{Kinematic-State Forecasting}
+
+We compare TORQUE-JEPA against physical controls, TORQUE-Sup, modality-matched supervised models, and adapted related methods using component-wise horizon curves.
+
+\subsection{Generalization to Unseen Objects and Conditions}
+
+We report object-disjoint forecasting, held-out initial-condition combinations, scenario-condition interpolation/extrapolation, and leave-one-scenario-out transfer as separate attribution tests. Multimodal transfer includes viewpoint shift because Camera A differs by scenario and calibration is withheld.
+
+\subsection{Ablation Studies}
+
+\begin{itemize}
+    \item cumulative modality progression and state+geometry diagnostic;
+    \item TORQUE-JEPA versus matched TORQUE-Sup;
+    \item world-location conditioning;
+    \item autoregressive versus all-at-once prediction;
+    \item frozen versus fine-tuned visual features;
+    \item hierarchical fusion versus Perceiver-style alternatives.
+\end{itemize}
+
+\subsection{Mechanical Representation Evaluation}
+
+We use object-disjoint linear and two-layer MLP probes for mass, volume, density, principal inertia, and COM offset. Context-summary probes evaluate static label accessibility, while predicted-latent analyses evaluate dynamic outcome associations. Probe targets use training-object normalization; evaluation aggregates predictions by object and reports MAE in physical units and $R^2$. Each object geometry has one fixed physical record, so intrinsic-parameter probes remain correlational with geometry and do not establish causal parameter identification. Violation-of-expectation analysis remains required after forecasting, but its perturbations, matched controls, surprise score, and statistical test will be preregistered in a separate design before implementation.
+
+\section{Discussion and Limitations}
+
+Primary methods do not observe physical parameters or an explicit environment representation, so forecasting is partially observed even though complete simulator rollouts are deterministic. RGB-D may expose visible support surfaces. Current scene layouts and Camera A poses are fixed within scenario conditions. Observation-end world location may therefore encode layout regularities, and multimodal cross-scenario transfer also includes viewpoint shift. Intrinsic physical properties are fixed per object and correlated with geometry. Our claims are limited to rigid-body kinematic-state forecasting and representation analysis under these controlled conditions; they do not establish layout transfer, causal recovery of physical parameters, deformable-body mechanics, or universal object understanding.
+
+\section{Conclusion}
+
+TORQUE defines controlled multimodal kinematic-state forecasting for irregular rigid bodies, and TORQUE-JEPA tests whether state-grounded future prediction yields useful frozen representations. The benchmark separates observable forecasting from privileged simulation context and evaluates accuracy, generalization, and mechanical accessibility under explicit scope limits.
+
+\bibliography{iclr2027_conference}
+\bibliographystyle{iclr2027_conference}
+
+\end{document}
